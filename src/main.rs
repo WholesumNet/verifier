@@ -228,7 +228,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                     owner: peer_id,
                                     status: job::Status::DockerWarmingUp,
                                     residue: job::Residue {
-                                        receipt_cid: None,
+                                        receipt_cid: Some(verification_details.receipt_cid.clone()),
                                     },
                                 },
                             );
@@ -291,11 +291,15 @@ fn job_status_of_peer(
         let status = match job.status {
             
             job::Status::VerificationFailed => {
-                compute::JobStatus::VerificationFailed
+                compute::JobStatus::VerificationFailed(
+                    job.residue.receipt_cid.clone().unwrap()
+                )
             },
 
             job::Status::VerificationSucceeded => {
-                compute::JobStatus::VerificationSucceeded
+                compute::JobStatus::VerificationSucceeded(
+                    job.residue.receipt_cid.clone().unwrap()
+                )
             },
 
             // all the rest are trivial status
