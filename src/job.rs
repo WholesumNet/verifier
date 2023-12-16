@@ -1,9 +1,10 @@
-use std::io::Error;
+use std::io::{Error, ErrorKind};
 use core::pin::Pin;
 use futures::stream::{Stream, FusedStream};
 use futures::task::{Context, Poll};
 use async_std::process::{Child, Command, Stdio};
 use libp2p::PeerId;
+use home;
 
 #[derive(Debug)]
 pub struct Residue {
@@ -34,6 +35,16 @@ pub struct Job {
     pub residue: Residue,                   // cids for stderr, output, receipt, ...
 }
 
+impl Job {
+    pub fn get_residue_path(job_id: &String) -> Result<String, Error> {
+        let home_dir = home::home_dir()
+            .ok_or_else(|| Error::new(ErrorKind::Other, "Home dir is not available."))?
+            .into_os_string().into_string()
+            .or_else(|_| Err(Error::new(ErrorKind::Other, "OS_String conversion failed.")))?;
+        Ok(format!("{home_dir}/.wholesum/jobs/verify/{job_id}/residue"))
+    }
+}
+
 pub struct ProcessHandle {
     pub job_id: String,
     pub child: Child,
@@ -49,9 +60,11 @@ impl DockerProcessStream {
     }
 
     pub fn add(&mut self, job_id: String, image: String, cmd: String) -> Result<(), Error>{
-        
+        // create job's directory 
+        let src_vol_path = Job::get_residue_path(&job_id)?;
+
         let container_name = format!("--name={job_id}");
-        let mount = format!("--mount=src={job_id},dst=/root/residue");
+        let mount = format!("--mount=type=bind,src={src_vol_path},dst=/home/prince/residue");
         let cmd_args = vec![
             "run",
             "--rm",
