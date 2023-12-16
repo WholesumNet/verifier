@@ -18,6 +18,8 @@ use libp2p::{
 };
 
 use async_std::process::{Command, Stdio};
+use std::fs;
+
 use comms::{
     p2p::{MyBehaviourEvent}, notice, compute
 };
@@ -202,14 +204,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             println!("receipt is ready to be verified: `{v_job_id}`");
                             // schedule the job to run 
                             let cmd = format!(
-                                "/root/verify/target/release/verify --image-id {} --receipt-file {}",
+                                "/home/prince/warrant --image-id {} --receipt-file {}",
                                 verification_details.image_id,
-                                format!("/root/residue/receipt"),
+                                format!("/home/prince/residue/receipt"),
                             );
                             // v_job_id allows local compute(prove) and verification of a job on the same machine
                             if let Err(e) = verification_job_stream.add(
                                 v_job_id.clone(),
-                                "test-risc0".to_string(),
+                                "risc0-warrant".to_string(),
                                 cmd,
                             ) {
 
@@ -319,22 +321,6 @@ async fn prepare_verification_job(
     dfs_cookie: &String,
     verification_details: compute::VerificationDetails,
 ) -> Result<String, Box<dyn Error>> {
-    let v_job_id = format!("v_{}", verification_details.job_id);
-    // create a docker volume
-    let exit_status = Command::new("docker")
-        .args(&["volume", "create", v_job_id.as_str()])
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .stdout(Stdio::null())
-        .status()
-        .await?;
-    let exit_code = exit_status.code().unwrap_or_else(
-        || exit_status.signal().unwrap_or_else(|| 99)
-    );
-    if 0 != exit_code {
-        return Err(format!("Docker volume creation failed, exit code: `{exit_code}").as_str().into())
-    }
-    println!("Docker volume is created: `{v_job_id}`");
     // download receipt from the dfs pod and put it into the docker volume
     dfs::fork_pod(
         dfs_client, dfs_config, dfs_cookie,
@@ -344,9 +330,10 @@ async fn prepare_verification_job(
         dfs_client, dfs_config, dfs_cookie,
         verification_details.pod_name.clone(),
     ).await?;
-    //@ should get /var/lib.... path from a config file
-    let docker_vol_path = format!("/var/lib/docker/volumes/{}/_data",
-        v_job_id);
+    // put the receipt inside a docker volume
+    let v_job_id = format!("v_{}", verification_details.job_id);    
+    let docker_vol_path = job::Job::get_residue_path(&v_job_id)?;
+    fs::create_dir_all(docker_vol_path.clone())?;
     dfs::download_file(
         dfs_client, dfs_config, dfs_cookie,
         verification_details.pod_name.clone(),
