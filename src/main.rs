@@ -211,7 +211,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             // v_job_id allows local compute(prove) and verification of a job on the same machine
                             if let Err(e) = verification_job_stream.add(
                                 v_job_id.clone(),
-                                "risc0-warrant".to_string(),
+                                "rezahsnz/risc0-warrant".to_string(),
                                 cmd,
                             ) {
 
