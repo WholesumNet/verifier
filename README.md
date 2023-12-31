@@ -7,7 +7,7 @@ Wholesum network is a p2p verifiable computing network. It builds on top of [Ris
 
 ## How to run
 
-Bringing up a verifier is no easy task that involves getting other apps up and running.
+Running a verifier is no easy task and involves getting some dependencies up and running.
 
 ### Prerequisites
 
@@ -24,12 +24,10 @@ Once Swarm is up and running, you should setup `FairOS-dfs` server. dfs server m
 Once dfs server is up, you need to create a wallet and put the credentials in a file structured as below:
 
 <pre>
-
 # a fairos-dfs client
 endpoint = "http://localhost:9090"
 username = "foo"
 password = "password for foo"
-
 </pre>
 
 Save it, say, to `dfs-user.toml` and setup is complete. To create a wallet with the above credentials, go to the [registration](https://create.fairdatasociety.org) web app and create your desired username. Pleae note that you would need Sepolia(an Ethereum testnet) eth to register users.
@@ -41,7 +39,8 @@ Docker is needed as it is going to run `Risc0` images. Make sure docker runtime 
 ### How to run
 
 To run a verifier agent, you would first need to fork the [comms](https://github.com/WholesumNet/comms) library and put it in the parent("..") directory of the verifier directory.
-Now everything is ready to serve clients. Hit 
+
+Now everything is ready to serve clients. Hit<br>
 `cargo run -- -d dfs-user.toml`
 
 and wait for verification requests!
@@ -49,12 +48,10 @@ and wait for verification requests!
 ### USAGE
 
 <pre>
-
 Usage: verifier [OPTIONS]
 
 Options:
   -d, --dfs-config-file <DFS_CONFIG_FILE>  
   -h, --help                               Print help
   -V, --version                            Print version
-
 </pre>
