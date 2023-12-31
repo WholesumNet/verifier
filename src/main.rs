@@ -1,10 +1,12 @@
 #![doc = include_str!("../README.md")]
 
 use futures::{
-    prelude::*,
     select,
+    stream::{
+        FuturesUnordered,
+        StreamExt,
+    },
 };
-use std::os::unix::process::ExitStatusExt;
 use std::collections::HashMap;
 use std::error::Error;
 use std::time::Duration;
@@ -17,8 +19,7 @@ use libp2p::{
     PeerId,
 };
 
-use async_std::process::{Command, Stdio};
-use std::fs;
+use bollard::Docker;
 
 use comms::{
     p2p::{MyBehaviourEvent}, notice, compute
@@ -64,11 +65,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
         "Cookie from FairOS-dfs cannot be empty."
     );
 
-    
-    // maintain docker continers for verification jobs
-    let mut verification_job_stream = job::DockerProcessStream::new();
+    println!("Connecting to docker daemon...");
+    let docker_con = Docker::connect_with_socket_defaults()?;
 
     let mut jobs = HashMap::<String, job::Job>::new();
+    let mut job_execution_futures = FuturesUnordered::new();
         
     // Libp2p swarm 
     let mut swarm = comms::p2p::setup_local_swarm();
@@ -181,44 +182,52 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             println!("Offer decliend by the client: `{peer_id}`");
                         },                        
                         
-                        notice::Response::VerificationJob(verification_details) => {
-                           
-                            println!("received `verification job` request from client: `{}`, job: `{:#?}`",
+                        notice::Response::VerificationJob(verification_details) => {                           
+                            println!("Received `verification job` request from client: `{}`, job: `{:#?}`",
                                 peer_id, verification_details);                           
                             // no duplicate jobs are allowed
                             if jobs.contains_key(&verification_details.job_id) {
                                 println!("Duplicate verification job, ignored.");
                                 continue;
                             }
-                            // create the docker volume
+                            // bring in the receipt                            
                             let v_job_id = match prepare_verification_job(
                                 &dfs_client, &dfs_config, &dfs_cookie,
-                                verification_details.clone(),
+                                &verification_details,
                             ).await {
                                 Ok(new_job_id) => new_job_id,
                                 Err(e) => {
-                                    println!("failed to prepare receipt for verification: `{e:?}`");
+                                    println!("Failed to prepare the receipt for verification: `{e:?}`");
                                     continue;
                                 }
                             };
-                            println!("receipt is ready to be verified: `{v_job_id}`");
-                            // schedule the job to run 
-                            let cmd = format!(
-                                "/home/prince/warrant --image-id {} --receipt-file {}",
-                                verification_details.image_id,
-                                format!("/home/prince/residue/receipt"),
-                            );
-                            // v_job_id allows local compute(prove) and verification of a job on the same machine
-                            if let Err(e) = verification_job_stream.add(
-                                v_job_id.clone(),
-                                "rezahsnz/risc0-warrant".to_string(),
-                                cmd,
-                            ) {
-
-                                println!("Job spawn error: `{e:?}`");
-                                continue;
-                            }
-                            
+                            println!("Receipt is ready to be verified: `{v_job_id}`");
+                            // run the job
+                            let verification_image = String::from("rezahsnz/risc0-warrant");
+                            let local_receipt_path = String::from("/home/prince/residue/receipt");
+                            let command = vec![
+                                String::from("/bin/sh"),
+                                String::from("-c"),
+                                format!(
+                                    "/home/prince/warrant --image-id {} --receipt-file {}",
+                                    verification_details.risc0_image_id,
+                                    local_receipt_path,
+                                )
+                            ]; 
+                            let residue_path = format!(
+                                "{}/verify/{}/residue",
+                                job::get_residue_path()?,
+                                v_job_id
+                            );                          
+                            job_execution_futures.push(
+                                job::run_docker_job(
+                                    &docker_con,
+                                    v_job_id.clone(),
+                                    verification_image,
+                                    command,
+                                    residue_path.clone()
+                                )
+                            );                          
                             // keep track of running jobs
                             jobs.insert(
                                 v_job_id.clone(),
@@ -245,39 +254,30 @@ async fn main() -> Result<(), Box<dyn Error>> {
             },
 
             // verification job is finished
-            mut process_handle = verification_job_stream.select_next_some() => {
-                println!("Docker process for verification job `{}` has been finished.",
-                    process_handle.job_id);
-                //@ collect any relevant objects before terminating process
-                let exit_code = match process_handle.child.status().await {
-                    Ok(status) => status.code().unwrap_or_else(
-                        || status.signal().unwrap_or_else(
-                            || {
-                                println!("Docker process was terminated by a signal but \
-                                    the signal is not available.");
-                                99
-                            })
-                    ),
-                    Err(e) => {
-                        println!("Failed to retrieve docker process's exit status: {e:?}");
-                        99
-                    }
-                };                
-                if false == jobs.contains_key(&process_handle.job_id) {
-                    println!("Critical error: job is missing.");
+            job_exec_res = job_execution_futures.select_next_some() => {                
+                if let Err(failed) = job_exec_res {
+                    println!("Failed to run the job: `{:#?}`", failed);       
+                    //@ job id?
+                    continue;
+                }
+                let result = job_exec_res.unwrap();
+                if false == jobs.contains_key(&result.job_id) {
+                    println!("Critical error: job `{}` is missing.", result.job_id);
                     //@ what to do here?
                     continue;
                 }
-                let job = jobs.get_mut(&process_handle.job_id).unwrap();
-                job.status = if exit_code == 0 { 
-                    job::Status::VerificationSucceeded
+                let job = jobs.get_mut(&result.job_id).unwrap();                
+                if result.exit_status_code != 0 { 
+                    job.status = job::Status::VerificationFailed;
+                    println!("Job `{}`'s execution finished with error: `{}`",
+                        result.job_id,
+                        result.error_message.unwrap_or_else(|| String::from("")),
+                    );
                 } else {
-                    job::Status::VerificationFailed 
-                };
+                    job.status = job::Status::VerificationSucceeded;
+                }
                 println!("verification result: {:#?}", job.status);
-            },        
-            
-            
+            },            
         }
     }
 }
@@ -319,7 +319,7 @@ async fn prepare_verification_job(
     dfs_client: &reqwest::Client,
     dfs_config: &dfs::Config,
     dfs_cookie: &String,
-    verification_details: compute::VerificationDetails,
+    verification_details: &compute::VerificationDetails,
 ) -> Result<String, Box<dyn Error>> {
     // download receipt from the dfs pod and put it into the docker volume
     dfs::fork_pod(
@@ -332,13 +332,17 @@ async fn prepare_verification_job(
     ).await?;
     // put the receipt inside a docker volume
     let v_job_id = format!("v_{}", verification_details.job_id);    
-    let docker_vol_path = job::Job::get_residue_path(&v_job_id)?;
-    fs::create_dir_all(docker_vol_path.clone())?;
+    let residue_path = format!(
+        "{}/verify/{}/residue",
+        job::get_residue_path()?,
+        v_job_id
+    );
+    std::fs::create_dir_all(residue_path.clone())?;
     dfs::download_file(
         dfs_client, dfs_config, dfs_cookie,
         verification_details.pod_name.clone(),
         format!("/receipt"),
-        format!("{docker_vol_path}/receipt")
+        format!("{residue_path}/receipt")
     ).await?;
     Ok(v_job_id)
 }
