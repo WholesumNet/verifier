@@ -20,6 +20,7 @@ use libp2p::{
 };
 
 use bollard::Docker;
+use jocker;
 
 use comms::{
     p2p::{MyBehaviourEvent}, notice, compute
@@ -220,7 +221,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                 v_job_id
                             );                          
                             job_execution_futures.push(
-                                job::run_docker_job(
+                                jocker::run_docker_job(
                                     &docker_con,
                                     v_job_id.clone(),
                                     verification_image,
