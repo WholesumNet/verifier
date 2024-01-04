@@ -20,7 +20,10 @@ use libp2p::{
 };
 
 use bollard::Docker;
-use jocker;
+use jocker::exec::{
+    // import_docker_image,
+    run_docker_job,
+};
 
 use comms::{
     p2p::{MyBehaviourEvent}, notice, compute
@@ -221,7 +224,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                 v_job_id
                             );                          
                             job_execution_futures.push(
-                                jocker::run_docker_job(
+                                run_docker_job(
                                     &docker_con,
                                     v_job_id.clone(),
                                     verification_image,
@@ -258,7 +261,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
             job_exec_res = job_execution_futures.select_next_some() => {                
                 if let Err(failed) = job_exec_res {
                     println!("Failed to run the job: `{:#?}`", failed);       
-                    //@ job id?
+                    //@ what to do with job_id?                    
+                    let _job_id = failed.who;
+                    //@ imply verification_failed?
                     continue;
                 }
                 let result = job_exec_res.unwrap();
