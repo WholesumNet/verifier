@@ -26,7 +26,7 @@ use jocker::exec::{
 };
 
 use comms::{
-    p2p::{MyBehaviourEvent}, notice, compute
+    p2p::{LocalBehaviourEvent}, notice, compute
 };
 use dstorage::dfs;
 
@@ -96,14 +96,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
             //     }
             // },
             event = swarm.select_next_some() => match event {
-                SwarmEvent::Behaviour(MyBehaviourEvent::Mdns(mdns::Event::Discovered(list))) => {
+                SwarmEvent::Behaviour(LocalBehaviourEvent::Mdns(mdns::Event::Discovered(list))) => {
                     for (peer_id, _multiaddr) in list {
                         println!("mDNS discovered a new peer: {peer_id}");
                         swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
                     }
                 },
 
-                SwarmEvent::Behaviour(MyBehaviourEvent::Mdns(mdns::Event::Expired(list))) => {
+                SwarmEvent::Behaviour(LocalBehaviourEvent::Mdns(mdns::Event::Expired(list))) => {
                     for (peer_id, _multiaddr) in list {
                         println!("mDNS discovered peer has expired: {peer_id}");
                         swarm.behaviour_mut().gossipsub.remove_explicit_peer(&peer_id);
@@ -114,7 +114,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     println!("Local node is listening on {address}");
                 },
 
-                SwarmEvent::Behaviour(MyBehaviourEvent::Gossipsub(gossipsub::Event::Message {
+                SwarmEvent::Behaviour(LocalBehaviourEvent::Gossipsub(gossipsub::Event::Message {
                     propagation_source: peer_id,
                     message,
                     ..
@@ -143,7 +143,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             // job status inquiry
                             // servers are lazy with job updates so clients need to query for their job's status every so often
 
-                            // bytes [1-16] determine th job id 
+                            // bytes [1-16] determine the job id 
                             // let bytes_id = match message.data[1..=17].try_into() {
                             //     Ok(b) => b,
                             //     Err(e) => {
@@ -174,7 +174,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 },
                 
                 // incoming response to an earlier compute/verify offer
-                SwarmEvent::Behaviour(MyBehaviourEvent::ReqResp(request_response::Event::Message{
+                SwarmEvent::Behaviour(LocalBehaviourEvent::ReqResp(request_response::Event::Message{
                     peer: peer_id,
                     message: request_response::Message::Response {
                         response,
