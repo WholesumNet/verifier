@@ -7,6 +7,7 @@ use futures::{
         StreamExt,
     },
 };
+use async_std::stream;
 use std::collections::HashMap;
 use std::error::Error;
 use std::time::Duration;
@@ -15,6 +16,7 @@ use clap::Parser;
 use reqwest;
 use libp2p::{
     gossipsub, mdns, request_response,
+    identity, identify, kad,  
     swarm::{SwarmEvent},
     PeerId,
 };
@@ -26,7 +28,7 @@ use jocker::exec::{
 };
 
 use comms::{
-    p2p::{LocalBehaviourEvent}, notice, compute
+    p2p::{MyBehaviourEvent}, notice, compute
 };
 use dstorage::dfs;
 
@@ -37,17 +39,27 @@ mod job;
 #[command(name = "Verifier CLI for Wholesum: p2p verifiable computing marketplace.")]
 #[command(author = "Wholesum team")]
 #[command(version = "0.1")]
-#[command(about = "Yet another verifiable compute marketplace.", long_about = None)]
+#[command(about = "Wholesum is a P2P verifiable computing marketplace and \
+                   this program is a CLI for verifier nodes.",
+          long_about = None)
+]
+
 struct Cli {
     #[arg(short, long)]
     dfs_config_file: Option<String>,
+
+    #[arg(long, action)]
+    dev: bool,
 }
 
 #[async_std::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    println!("<-> `Verifier` agent for Wholesum network <->");
     
     let cli = Cli::parse();
+    println!("<-> `Verifier` agent for Wholesum network <->");
+    println!("operating mode: `{}` network",
+        if false == cli.dev { "global" } else { "local(development)" }
+    ); 
     
     
     // FairOS-dfs http client
@@ -76,14 +88,37 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut job_execution_futures = FuturesUnordered::new();
         
     // Libp2p swarm 
-    let mut swarm = comms::p2p::setup_local_swarm();
+    let keypair = identity::Keypair::generate_ed25519();
+    let mut swarm = comms::p2p::setup_swarm(&keypair).await?;    
+    let topic = gossipsub::IdentTopic::new("<-- p2p compute bazaar -->");
+    let _ = 
+        swarm
+            .behaviour_mut()
+            .gossipsub
+            .subscribe(&topic);
+    // bootstrap through bootnodes
+    if false == cli.dev {
+        const BOOTNODES: [&str; 1] = [
+            "12D3KooWLVDsEUT8YKMbZf3zTihL3iBGoSyZnewWgpdv9B7if7Sn",
+        ];
+        for peer in &BOOTNODES {
+            swarm.behaviour_mut()
+                .kademlia
+                .add_address(&peer.parse()?, "/ip4/80.209.226.9/tcp/20201".parse()?);
+        }
+    }
 
     // read full lines from stdin
     // let mut input = io::BufReader::new(io::stdin()).lines().fuse();
 
     // listen on all interfaces and whatever port the os assigns
-    swarm.listen_on("/ip4/0.0.0.0/udp/0/quic-v1".parse()?)?;
-    swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
+    //@ should read from the config file
+    swarm.listen_on("/ip4/127.0.0.1/udp/20203/quic-v1".parse()?)?;
+    swarm.listen_on("/ip4/127.0.0.1/tcp/20203".parse()?)?;
+    swarm.listen_on("/ip6/::/tcp/20203".parse()?)?;
+    swarm.listen_on("/ip6/::/udp/20203/quic-v1".parse()?)?;
+
+    let mut timer_peer_discovery = stream::interval(Duration::from_secs(5 * 60)).fuse();
 
     // oh shit here we go again
     loop {
@@ -95,26 +130,70 @@ async fn main() -> Result<(), Box<dyn Error>> {
             //       println!("Publish error: {e:?}")
             //     }
             // },
-            event = swarm.select_next_some() => match event {
-                SwarmEvent::Behaviour(LocalBehaviourEvent::Mdns(mdns::Event::Discovered(list))) => {
-                    for (peer_id, _multiaddr) in list {
-                        println!("mDNS discovered a new peer: {peer_id}");
-                        swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
-                    }
-                },
 
-                SwarmEvent::Behaviour(LocalBehaviourEvent::Mdns(mdns::Event::Expired(list))) => {
-                    for (peer_id, _multiaddr) in list {
-                        println!("mDNS discovered peer has expired: {peer_id}");
-                        swarm.behaviour_mut().gossipsub.remove_explicit_peer(&peer_id);
-                    }
-                },
+            // try to discover new peers
+            () = timer_peer_discovery.select_next_some() => {
+                if true == cli.dev {
+                    continue;
+                }
+                let random_peer_id = PeerId::random();
+                println!("Searching for the closest peers to `{random_peer_id}`");
+                swarm
+                    .behaviour_mut()
+                    .kademlia
+                    .get_closest_peers(random_peer_id);
+            },
+
+            event = swarm.select_next_some() => match event {
 
                 SwarmEvent::NewListenAddr { address, .. } => {
                     println!("Local node is listening on {address}");
                 },
 
-                SwarmEvent::Behaviour(LocalBehaviourEvent::Gossipsub(gossipsub::Event::Message {
+                // mdns events
+                SwarmEvent::Behaviour(MyBehaviourEvent::Mdns(mdns::Event::Discovered(list))) => {
+                    for (peer_id, _multiaddr) in list {
+                        println!("mDNS discovered a new peer: {peer_id}");
+                        swarm
+                            .behaviour_mut()
+                            .gossipsub
+                            .add_explicit_peer(&peer_id);
+                    }
+                },
+
+                SwarmEvent::Behaviour(MyBehaviourEvent::Mdns(mdns::Event::Expired(list))) => {
+                    for (peer_id, _multiaddr) in list {
+                        println!("mDNS discovered peer has expired: {peer_id}");
+                        swarm
+                            .behaviour_mut()
+                            .gossipsub
+                            .remove_explicit_peer(&peer_id);
+                    }
+                },
+
+                // identify events
+                SwarmEvent::Behaviour(MyBehaviourEvent::Identify(identify::Event::Received {
+                    peer_id,
+                    info,
+                    ..
+                })) => {
+                    println!("Inbound identify event `{:#?}`", info);
+                    if false == cli.dev {
+                        for addr in info.listen_addrs {
+                            // if false == addr.iter().any(|item| item == &"127.0.0.1" || item == &"::1"){
+                            swarm
+                                .behaviour_mut()
+                                .kademlia
+                                .add_address(&peer_id, addr);
+                            // }
+                        }
+                    }
+
+                },
+
+
+                // gossipsub events
+                SwarmEvent::Behaviour(MyBehaviourEvent::Gossipsub(gossipsub::Event::Message {
                     propagation_source: peer_id,
                     message,
                     ..
@@ -159,12 +238,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                 peer_id
                             ); 
                             if updates.len() > 0 {
-                                let sw_req_id = swarm
-                                    .behaviour_mut().req_resp
-                                    .send_request(
-                                        &peer_id,
-                                        notice::Request::UpdateForJobs(updates),
-                                    );
+                                let _sw_req_id = 
+                                    swarm
+                                        .behaviour_mut()
+                                        .req_resp
+                                        .send_request(
+                                            &peer_id,
+                                            notice::Request::UpdateForJobs(updates),
+                                        );
                                 // println!("jobs' status was sent to the client. req_id: `{sw_req_id}`");                            
                             }
                         },
@@ -173,8 +254,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     };
                 },
                 
-                // incoming response to an earlier compute/verify offer
-                SwarmEvent::Behaviour(LocalBehaviourEvent::ReqResp(request_response::Event::Message{
+                // request-response events
+                SwarmEvent::Behaviour(MyBehaviourEvent::ReqResp(request_response::Event::Message{
                     peer: peer_id,
                     message: request_response::Message::Response {
                         response,
@@ -253,7 +334,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     }
                 },
 
-                _ => {}
+                _ => println!("{:#?}", event),
 
             },
 
