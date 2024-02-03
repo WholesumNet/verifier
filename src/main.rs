@@ -50,6 +50,9 @@ struct Cli {
 
     #[arg(long, action)]
     dev: bool,
+
+    #[arg(short, long)]
+    key_file: Option<String>,
 }
 
 #[async_std::main]
@@ -87,9 +90,24 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut jobs = HashMap::<String, job::Job>::new();
     let mut job_execution_futures = FuturesUnordered::new();
         
-    // Libp2p swarm 
-    let keypair = identity::Keypair::generate_ed25519();
-    let mut swarm = comms::p2p::setup_swarm(&keypair).await?;    
+    // key 
+    let local_key = {
+        if let Some(key_file) = cli.key_file {
+            let bytes = std::fs::read(key_file).unwrap();
+            identity::Keypair::from_protobuf_encoding(&bytes)?
+        } else {
+            // Create a random key for ourselves
+            let new_key = identity::Keypair::generate_ed25519();
+            let bytes = new_key.to_protobuf_encoding().unwrap();
+            let _bw = std::fs::write("./key.secret", bytes);
+            println!("No keys were supplied, so one has been generated for you and saved to `{}` file.", "./ket.secret");
+            new_key
+        }
+    };    
+    println!("my peer id: `{:?}`", PeerId::from_public_key(&local_key.public()));
+
+    // swarm 
+    let mut swarm = comms::p2p::setup_swarm(&local_key).await?;    
     let topic = gossipsub::IdentTopic::new("<-- p2p compute bazaar -->");
     let _ = 
         swarm
