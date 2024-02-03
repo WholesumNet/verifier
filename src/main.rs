@@ -413,10 +413,12 @@ async fn prepare_verification_job(
         dfs_client, dfs_config, dfs_cookie,
         verification_details.receipt_cid.clone(),
     ).await?;
-    dfs::open_pod(
+    if let Err(e) = dfs::open_pod(
         dfs_client, dfs_config, dfs_cookie,
         verification_details.pod_name.clone(),
-    ).await?;
+    ).await {
+        eprintln!("Warning: pod open error: `{e:#?}`");
+    }
     // put the receipt inside a docker volume
     let v_job_id = format!("v_{}", verification_details.job_id);    
     let residue_path = format!(
