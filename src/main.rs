@@ -228,9 +228,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             // }
                         }
                     }
-
                 },
-
 
                 // gossipsub events
                 SwarmEvent::Behaviour(MyBehaviourEvent::Gossipsub(gossipsub::Event::Message {
@@ -243,10 +241,30 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     //          msg_str);
                     // println!("received gossip message: {:#?}", message);
                     // first byte is message identifier                
-                    let notice_req = notice::Notice::try_from(message.data[0])?;
-                    match notice_req {
+                    // let notice_req = notice::Notice::try_from(message.data[0])?;
+                    let need = bincode::deserialize(&message.data)?;
+                    // let notice_req = notice::Notice::try_from(message.data[0])?;
+                    match need {
+
+                        notice::Notice::StatusUpdate(_) => {
+                            println!("`job-status` request from client: `{}`", peer_id);
+                            let updates = job_status_of_peer(
+                                &jobs,
+                                peer_id
+                            ); 
+                            if updates.len() > 0 {
+                                let _ = swarm
+                                    .behaviour_mut().req_resp
+                                    .send_request(
+                                        &peer_id,
+                                        // channel,
+                                        notice::Request::UpdateForJobs(updates),
+                                    );
+                                // println!("jobs' status was sent to the client. req_id: `{_sw_resp_id}`");                            
+                            }
+                        },
                         
-                        notice::Notice::Verification => {                            
+                        notice::Notice::Verification(_) => {                            
                             println!("`need verification` request from client: `{peer_id}`");
                             // engage with the client through a direct p2p channel
                             let sw_req_id = swarm
@@ -256,38 +274,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                     notice::Request::VerificationOffer,
                                 );
                             println!("verification offer was sent, id: {sw_req_id}");
-                        },
-
-                        notice::Notice::JobStatus => {
-                            // job status inquiry
-                            // servers are lazy with job updates so clients need to query for their job's status every so often
-
-                            // bytes [1-16] determine the job id 
-                            // let bytes_id = match message.data[1..=17].try_into() {
-                            //     Ok(b) => b,
-                            //     Err(e) => {
-                            //         println!("Invalid job id for `job-status` request, {e:?}");
-                            //         continue;
-                            //     },
-                            // };
-                            // let job_id = Uuid::from_bytes(bytes_id).to_string();
-                            // println!("`job-status` request from client: `{}`",
-                            //     peer_id);
-                            let updates = job_status_of_peer(
-                                &jobs,
-                                peer_id
-                            ); 
-                            if updates.len() > 0 {
-                                let _sw_req_id = 
-                                    swarm
-                                        .behaviour_mut()
-                                        .req_resp
-                                        .send_request(
-                                            &peer_id,
-                                            notice::Request::UpdateForJobs(updates),
-                                        );
-                                // println!("jobs' status was sent to the client. req_id: `{sw_req_id}`");                            
-                            }
                         },
 
                         _ => (),
@@ -315,7 +301,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                 println!("Duplicate verification job, ignored.");
                                 continue;
                             }
-                            // bring in the receipt                            
+                            // bring in the receipt 
+                            //@ don't block here, put it into a future                           
                             let v_job_id = match prepare_verification_job(
                                 &dfs_client, &dfs_config, &dfs_cookie,
                                 &verification_details,
@@ -328,7 +315,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             };
                             println!("Receipt is ready to be verified: `{v_job_id}`");
                             // run the job
-                            let verification_image = String::from("rezahsnz/risc0-warrant");
+                            let verification_image = String::from("rezahsnz/warrant:0.21");
                             let local_receipt_path = String::from("/home/prince/residue/receipt");
                             let command = vec![
                                 String::from("/bin/sh"),
@@ -370,9 +357,41 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             );
                         },
 
-                        _ => (),
+                        // _ => (),
                     }
                 },
+
+                // SwarmEvent::Behaviour(MyBehaviourEvent::ReqResp(request_response::Event::Message{
+                //     peer: peer_id,
+                //     message: request_response::Message::Request {
+                //         request,
+                //         channel,
+                //         ..                    }
+                // })) => {                    
+                //     match request {
+                //         // job status inquiry
+                //         notice::Request::JobStatus(_to_be_updated) => {
+                //             // servers are lazy with job updates so clients need to query for their job's status every so often
+                //             println!("`job-status` request from client: `{}`", peer_id);
+                //             let updates = job_status_of_peer(
+                //                 &jobs,
+                //                 peer_id
+                //             ); 
+                //             if updates.len() > 0 {
+                //                 let _ = swarm
+                //                     .behaviour_mut().req_resp
+                //                     .send_response(
+                //                         // &peer_id,
+                //                         channel,
+                //                         notice::Response::UpdateForJobs(updates),
+                //                     );
+                //                 // println!("jobs' status was sent to the client. req_id: `{_sw_resp_id}`");                            
+                //             }
+                //         },
+
+                //         _ => {}
+                //     }
+                // },
 
                 _ => {
                     // println!("{:#?}", event);
@@ -383,7 +402,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             // verification job is finished
             job_exec_res = job_execution_futures.select_next_some() => {                
                 if let Err(failed) = job_exec_res {
-                    println!("Failed to run the job: `{:#?}`", failed);       
+                    eprintln!("Failed to run the job: `{:#?}`", failed);       
                     //@ what to do with job_id?                    
                     let _job_id = failed.who;
                     //@ imply verification_failed?
@@ -461,7 +480,7 @@ async fn prepare_verification_job(
     ).await {
         eprintln!("Warning: pod open error: `{e:#?}`");
     }
-    // put the receipt inside a docker volume
+    // put the receipt into a docker volume
     let v_job_id = format!("v_{}", verification_details.job_id);    
     let residue_path = format!(
         "{}/verify/{}/residue",
